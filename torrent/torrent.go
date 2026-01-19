@@ -233,12 +233,14 @@ func (t *Torrent) Download(peers []Peer, infoHash [20]byte, peerId [20]byte) err
 	workQueue := make(chan *PieceWork, len(pieces))
 	results := make(chan *PieceResult)
 
+	stats := make([]WorkerStatus, len(peers))
+
 	for _, p := range pieces {
 		workQueue <- &PieceWork{p.Index, p.Hash, p.Length}
 	}
 
-	for _, p := range peers {
-		go t.startWorker(p, infoHash, peerId, workQueue, results)
+	for i, p := range peers {
+		go t.startWorker(p, infoHash, peerId, workQueue, results, &stats[i])
 	}
 
 	file, err := os.OpenFile(t.Info.Name, os.O_CREATE|os.O_WRONLY, 0666)
@@ -248,6 +250,7 @@ func (t *Torrent) Download(peers []Peer, infoHash [20]byte, peerId [20]byte) err
 	defer file.Close()
 
 	doneCount := 0
+	go t.DisplayStats(stats, &doneCount, len(pieces))
 	for doneCount < len(pieces) {
 		res := <-results
 		hash := sha1.Sum(res.Buf)

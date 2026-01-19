@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -23,8 +24,16 @@ type PieceResult struct {
 	Buf   []byte
 }
 
-func (t *Torrent) startWorker(peer Peer, infoHash [20]byte, peerID [20]byte, workQueue chan *PieceWork, results chan *PieceResult) {
+type WorkerStatus struct {
+	Address string
+	Piece   int
+	Status  string // "Connecting", "Downloading", "Choked", "Idle"
+}
+
+func (t *Torrent) startWorker(peer Peer, infoHash [20]byte, peerID [20]byte, workQueue chan *PieceWork, results chan *PieceResult, ws *WorkerStatus) {
 	address := net.JoinHostPort(peer.IP.String(), strconv.Itoa(int(peer.Port)))
+	ws.Address = address
+	ws.Status = "Connecting"
 
 	conn, err := net.DialTimeout("tcp", address, 3*time.Second)
 	if err != nil {
@@ -34,12 +43,12 @@ func (t *Torrent) startWorker(peer Peer, infoHash [20]byte, peerID [20]byte, wor
 	defer conn.Close()
 
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	ws.Status = "Handshaking"
 	hs := p2p.Handshake{Pstr: "BitTorrent protocol", InfoHash: infoHash, PeerID: peerID}
 	if _, err := conn.Write(hs.Serialize()); err != nil {
 		fmt.Printf("[Worker] %s: Handshake send failed: %v\n", address, err)
 		return
 	}
-
 	res, err := p2p.Unserialize(conn)
 	if err != nil {
 		fmt.Printf("[Worker] %s: Handshake read failed: %v\n", address, err)
@@ -52,19 +61,24 @@ func (t *Torrent) startWorker(peer Peer, infoHash [20]byte, peerID [20]byte, wor
 	conn.SetDeadline(time.Time{})
 
 	fmt.Printf("[Worker] %s: Handshake SUCCESS\n", address)
-
+	ws.Status = "Interested"
 	// Signal interest
 	interested := p2p.Message{ID: p2p.MsgInterested}
 	conn.Write(interested.Serialize())
 
 	for pw := range workQueue {
+		ws.Piece = pw.Index
+		ws.Status = "Downloading"
+
 		buf, err := t.attemptDownloadPiece(conn, pw)
 		if err != nil {
 			fmt.Printf("[Worker] %s: Piece %d failed: %v\n", address, pw.Index, err)
+			ws.Status = "Error"
 			workQueue <- pw
 			return
 		}
 		results <- &PieceResult{Index: pw.Index, Buf: buf}
+		ws.Status = "Idle"
 	}
 }
 
@@ -108,4 +122,41 @@ func (t *Torrent) attemptDownloadPiece(conn net.Conn, pw *PieceWork) ([]byte, er
 		}
 	}
 	return buf, nil
+}
+
+// status display
+func (t *Torrent) DisplayStats(stats []WorkerStatus, doneCount *int, total int) {
+	for {
+		// ANSI escape code to clear screen and move cursor to top-left
+		fmt.Print("\033[H\033[2J")
+
+		fmt.Printf("File: %s\n", t.Info.Name)
+		pct := float64(*doneCount) / float64(total) * 100
+
+		// Simple progress bar
+		barLen := 40
+		filled := int(float64(barLen) * (float64(*doneCount) / float64(total)))
+		bar := strings.Repeat("█", filled) + strings.Repeat("-", barLen-filled)
+
+		fmt.Printf("[%s] %.2f%% (%d/%d pieces)\n", bar, pct, *doneCount, total)
+		fmt.Println(strings.Repeat("=", 50))
+		fmt.Printf("%-20s %-8s %-12s\n", "PEER", "PIECE", "STATUS")
+
+		// Show only the first 15 active peers to keep the screen clean
+		count := 0
+		for _, s := range stats {
+			if s.Status == "Downloading" || s.Status == "Interested" {
+				fmt.Printf("%-20s %-8d %-12s\n", s.Address, s.Piece, s.Status)
+				count++
+			}
+			if count > 15 {
+				break
+			}
+		}
+
+		time.Sleep(200 * time.Millisecond)
+		if *doneCount >= total {
+			break
+		}
+	}
 }
