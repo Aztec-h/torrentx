@@ -1,0 +1,35 @@
+# Go build output
+*.exe
+*.out
+*.test
+
+# Dependency directories
+/vendor/
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Torrent downloads and cache
+*.torrent
+*.part
+
+# Environment files
+.env
+
+# Backup files
+*~
+
+# Ignore node_modules if present
+node_modules/
+
+# iso files
+*.iso
